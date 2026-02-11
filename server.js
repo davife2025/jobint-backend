@@ -15,7 +15,7 @@ const { redisClient } = require('./config/redis');
 
 // Routes
 const authRoutes = require('./routes/auth');
-const { router: guestRoutes } = require('./routes/guestApplication'); // ✅ Destructure router
+const guestRoutes = require('./routes/guestApplication'); // ✅ Destructure router
 const userRoutes = require('./routes/users');
 const jobRoutes = require('./routes/jobs');
 const applicationRoutes = require('./routes/applications');
