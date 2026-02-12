@@ -15,7 +15,7 @@ const { redisClient } = require('./config/redis');
 
 // Routes
 const authRoutes = require('./routes/auth');
-const guestRoutes = require('./routes/guestApplication'); // ✅ Destructure router
+const { router: guestRoutes } = require('./routes/guestApplication'); // ✅ Destructure
 const userRoutes = require('./routes/users');
 const jobRoutes = require('./routes/jobs');
 const applicationRoutes = require('./routes/applications');
@@ -23,7 +23,6 @@ const interviewRoutes = require('./routes/interview');
 const calendarRoutes = require('./routes/calendar');
 const blockchainRoutes = require('./routes/blockchain');
 const notificationRoutes = require('./routes/notifications');
-
 // Cron jobs
 const dailyJobScrape = require('./jobs/dailyJobScrape');
 const interviewReminders = require('./jobs/interviewReminders');
