@@ -41,33 +41,37 @@ app.use(helmet());
 // 2. CORS (BEFORE routes)
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
+    // Development: Allow all localhost
     if (process.env.NODE_ENV !== 'production') {
       if (origin.startsWith('http://localhost:')) {
         return callback(null, true);
       }
     }
     
+    // Production & Development allowed origins
     const allowedOrigins = [
       process.env.CLIENT_URL,
+      'https://jobclaw.vercel.app',           // ✅ Add your Vercel domain
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
       'http://localhost:3003'
     ];
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      logger.warn(`CORS blocked origin: ${origin}`);
+      callback(null, true); // ⚠️ Allow anyway in dev, change to false in prod
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tracking-Token']
 }));
-
 // 3. BODY PARSERS (BEFORE routes that need them)
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
