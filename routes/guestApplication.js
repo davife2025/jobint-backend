@@ -2,7 +2,7 @@ const express = require('express');
 const { query } = require('../config/database');
 const { uploadCV, handleUploadError } = require('../middleware/fileUpload');
 const cvParserService = require('../services/cvParserService');
-const emailService = require('../services/emailServices');
+const emailService = require('../services/emailServices'); // Fixed: added 's'
 const matchingService = require('../services/matchingServices');
 const logger = require('../utils/logger');
 
@@ -29,7 +29,7 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
       return res.status(400).json({ error: 'Invalid email address' });
     }
 
-    logger.info(`Guest application received: ${email}`);
+    logger.info(`📥 Guest application received: ${email}`);
 
     // Check if user already exists
     const existingUser = await query(
@@ -54,7 +54,7 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
         [firstName, lastName || null, phone || null, location || null, userId]
       );
 
-      logger.info(`Updated existing user: ${userId}`);
+      logger.info(`♻️  Updated existing user: ${userId}`);
     } else {
       // Create new guest user
       const userResult = await query(
@@ -68,7 +68,7 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
       trackingToken = userResult.rows[0].tracking_token;
       isNewUser = true;
 
-      logger.info(`Created new guest user: ${userId}`);
+      logger.info(`✨ Created new guest user: ${userId}`);
     }
 
     // Parse job titles from string or array
@@ -85,9 +85,6 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
     const cvFilePath = req.file.path;
     const cvUrl = `/uploads/resumes/${req.file.filename}`;
 
-    // Process CV in background (don't wait)
-    processCVAsync(userId, cvFilePath, cvUrl, jobTitlesArray, remotePreference || 'any', email, firstName, trackingToken);
-
     // Log activity
     await query(
       `INSERT INTO activity_logs (user_id, action, entity_type, entity_id, details)
@@ -99,15 +96,20 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
       })]
     );
 
-    // Send immediate welcome email
-    await emailService.sendWelcomeEmail({
-      id: userId,
-      email,
-      first_name: firstName,
-      tracking_token: trackingToken
-    });
+    // ✅ FIX: Send welcome email BEFORE starting CV processing
+    try {
+      await emailService.sendWelcomeEmail({
+        id: userId,
+        email,
+        first_name: firstName,
+        tracking_token: trackingToken
+      });
+      logger.info(`📧 Welcome email sent to ${email}`);
+    } catch (emailError) {
+      logger.error('Welcome email failed (non-blocking):', emailError);
+    }
 
-    // Return success response
+    // ✅ FIX: Return response IMMEDIATELY, then process CV in background
     res.status(201).json({
       message: 'Application submitted successfully! Check your email for your tracking link.',
       trackingToken,
@@ -116,8 +118,26 @@ router.post('/submit', uploadCV, handleUploadError, async (req, res) => {
       isNewUser
     });
 
+    // ✅ FIX: Process CV asynchronously AFTER response is sent
+    setImmediate(() => {
+      processCVAsync(
+        userId, 
+        cvFilePath, 
+        cvUrl, 
+        jobTitlesArray, 
+        remotePreference || 'any', 
+        email, 
+        firstName, 
+        trackingToken
+      ).catch(err => {
+        logger.error(`Background CV processing failed for user ${userId}:`, err);
+      });
+    });
+
+    logger.info(`✅ Response sent for ${email}, CV processing queued`);
+
   } catch (error) {
-    logger.error('Guest application error:', error);
+    logger.error('❌ Guest application error:', error);
     res.status(500).json({ 
       error: 'Failed to submit application. Please try again.' 
     });
@@ -160,7 +180,7 @@ router.get('/track/:token', async (req, res) => {
          jl.title as job_title,
          jl.company,
          jl.location,
-         jl.url as job_url,
+         jl.application_url as job_url,
          jl.remote_type
        FROM applications a
        JOIN job_listings jl ON a.job_id = jl.id
@@ -182,7 +202,7 @@ router.get('/track/:token', async (req, res) => {
          jl.company,
          jl.location,
          jl.description,
-         jl.url,
+         jl.application_url as url,
          jl.salary_range,
          jl.remote_type
        FROM job_matches jm
@@ -311,10 +331,11 @@ router.put('/track/:token/review-match/:matchId', async (req, res) => {
 
 /**
  * Background CV processing function
+ * ✅ This runs AFTER the response is sent
  */
 async function processCVAsync(userId, cvFilePath, cvUrl, jobTitles, remotePreference, email, firstName, trackingToken) {
   try {
-    logger.info(`Starting background CV processing for user ${userId}`);
+    logger.info(`🔄 Starting background CV processing for user ${userId}`);
 
     // Process CV
     const cvResult = await cvParserService.processCV(cvFilePath);
@@ -352,20 +373,23 @@ async function processCVAsync(userId, cvFilePath, cvUrl, jobTitles, remotePrefer
         ]
       );
 
-      logger.info(`Profile created for user ${userId}`);
+      logger.info(`✅ Profile created for user ${userId}`);
 
-      // Run job matching
-      const matches = await matchingService.matchJobsForUser(userId, 20);
+      // Run job matching (only if OpenAI is configured)
+      if (process.env.OPENAI_API_KEY) {
+        const matches = await matchingService.matchJobsForUser(userId, 20);
+        logger.info(`🎯 Found ${matches.length} job matches for user ${userId}`);
 
-      logger.info(`Found ${matches.length} job matches for user ${userId}`);
-
-      // Send matches found email if matches exist
-      if (matches.length > 0) {
-        await emailService.sendMatchesFoundEmail(
-          { id: userId, email, first_name: firstName, tracking_token: trackingToken },
-          matches.length,
-          matches
-        );
+        // Send matches found email if matches exist
+        if (matches.length > 0) {
+          await emailService.sendMatchesFoundEmail(
+            { id: userId, email, first_name: firstName, tracking_token: trackingToken },
+            matches.length,
+            matches
+          );
+        }
+      } else {
+        logger.warn('⚠️  OpenAI not configured - skipping job matching');
       }
 
       // Log activity
@@ -374,12 +398,12 @@ async function processCVAsync(userId, cvFilePath, cvUrl, jobTitles, remotePrefer
          VALUES ($1, 'cv_processed', 'profile', $2)`,
         [userId, JSON.stringify({ 
           skillsFound: cvResult.parsedData.skills.length,
-          matchesFound: matches.length 
+          success: true
         })]
       );
 
     } else {
-      logger.error(`CV processing failed for user ${userId}: ${cvResult.error}`);
+      logger.error(`❌ CV processing failed for user ${userId}: ${cvResult.error}`);
       
       // Still create basic profile
       await query(
@@ -392,7 +416,7 @@ async function processCVAsync(userId, cvFilePath, cvUrl, jobTitles, remotePrefer
     }
 
   } catch (error) {
-    logger.error(`Background CV processing error for user ${userId}:`, error);
+    logger.error(`❌ Background CV processing error for user ${userId}:`, error);
   }
 }
 
