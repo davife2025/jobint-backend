@@ -264,7 +264,7 @@ class ApplicationService {
    */
   async generateCoverLetter(user, job) {
     try {
-      const OpenAI = require('openai');
+      const OpenAI = require('openai/index.mjs');
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
       const prompt = `

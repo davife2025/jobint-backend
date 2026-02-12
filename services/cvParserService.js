@@ -1,4 +1,4 @@
-const OpenAI = require('openai');
+const OpenAI = require('openai/index.mjs');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const fs = require('fs').promises;
