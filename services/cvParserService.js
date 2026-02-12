@@ -5,6 +5,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
 
+const { OpenAI } = require("openai");
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
