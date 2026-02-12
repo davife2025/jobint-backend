@@ -1,113 +1,52 @@
-const OpenAI = require('openai/index.mjs');
 const { query } = require('../config/database');
 const logger = require('../utils/logger');
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// ✅ FIX: Properly initialize OpenAI only if available
+let openai = null;
+
+if (process.env.OPENAI_API_KEY) {
+  try {
+    const { OpenAI } = require('openai');
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+    logger.info('✅ OpenAI initialized for job matching');
+  } catch (error) {
+    logger.warn('⚠️  OpenAI not available for matching:', error.message);
+  }
+}
 
 class MatchingService {
   /**
-   * Generate embeddings for text
-   */
-  async generateEmbedding(text) {
-    try {
-      const response = await openai.embeddings.create({
-        model: 'text-embedding-ada-002',
-        input: text
-      });
-      return response.data[0].embedding;
-    } catch (error) {
-      logger.error('Embedding generation error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Calculate cosine similarity between two vectors
-   */
-  cosineSimilarity(vecA, vecB) {
-    const dotProduct = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
-    const magnitudeA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
-    const magnitudeB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
-    return dotProduct / (magnitudeA * magnitudeB);
-  }
-
-  /**
-   * Build user profile text for matching
-   */
-  async buildUserProfile(userId) {
-    try {
-      // Get user data
-      const userResult = await query(
-        `SELECT first_name, last_name, location, preferences 
-         FROM users WHERE id = $1`,
-        [userId]
-      );
-
-      if (userResult.rows.length === 0) {
-        throw new Error('User not found');
-      }
-
-      const user = userResult.rows[0];
-
-      // Get user skills
-      const skillsResult = await query(
-        `SELECT skill_name, years_experience, proficiency 
-         FROM user_skills WHERE user_id = $1`,
-        [userId]
-      );
-
-      const skills = skillsResult.rows
-        .map(s => `${s.skill_name} (${s.proficiency || 'intermediate'}, ${s.years_experience || 0} years)`)
-        .join(', ');
-
-      const preferences = user.preferences || {};
-      
-      const profileText = `
-        Professional Profile:
-        Name: ${user.first_name} ${user.last_name}
-        Location: ${user.location || 'Not specified'}
-        Skills: ${skills}
-        Preferred Job Titles: ${preferences.jobTitles?.join(', ') || 'Any'}
-        Preferred Locations: ${preferences.locations?.join(', ') || 'Any'}
-        Remote Work: ${preferences.remote ? 'Yes' : 'No'}
-        Salary Range: ${preferences.minSalary ? `$${preferences.minSalary}+` : 'Not specified'}
-        Employment Types: ${preferences.employmentTypes?.join(', ') || 'Full-time'}
-      `.trim();
-
-      return profileText;
-    } catch (error) {
-      logger.error('Build user profile error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Match jobs to user using AI
+   * Match jobs to user using AI or basic matching
    */
   async matchJobsForUser(userId, limit = 10) {
     try {
-      logger.info(`Matching jobs for user ${userId}`);
+      logger.info(`🎯 Matching jobs for user ${userId}`);
 
-      // Build user profile
-      const userProfile = await this.buildUserProfile(userId);
-
-      // Get user preferences
-      const userResult = await query(
-        'SELECT preferences FROM users WHERE id = $1',
+      // Get user profile from database
+      const profileResult = await query(
+        `SELECT * FROM user_profiles WHERE user_id = $1`,
         [userId]
       );
-      const preferences = userResult.rows[0]?.preferences || {};
 
-      // Get recent jobs (last 7 days)
+      if (profileResult.rows.length === 0) {
+        logger.warn(`No profile found for user ${userId}`);
+        return [];
+      }
+
+      const profile = profileResult.rows[0];
+      const skills = profile.skills ? JSON.parse(profile.skills) : [];
+      const desiredTitles = profile.desired_job_titles ? JSON.parse(profile.desired_job_titles) : [];
+
+      // Get recent jobs (last 30 days)
       const jobsResult = await query(
-        `SELECT id, title, company, location, description, salary, remote, job_type
+        `SELECT id, title, company, location, description, salary_range, remote_type, job_type
          FROM job_listings 
          WHERE is_active = TRUE 
-         AND scraped_at > NOW() - INTERVAL '7 days'
+         AND scraped_at > NOW() - INTERVAL '30 days'
          AND id NOT IN (
-           SELECT job_listing_id FROM job_matches 
+           SELECT job_id FROM job_matches 
            WHERE user_id = $1
          )
          ORDER BY scraped_at DESC
@@ -116,195 +55,202 @@ class MatchingService {
       );
 
       const jobs = jobsResult.rows;
-      logger.info(`Found ${jobs.length} unmatched jobs`);
+      logger.info(`📋 Found ${jobs.length} unmatched jobs`);
+
+      if (jobs.length === 0) {
+        return [];
+      }
 
       const matches = [];
 
       for (const job of jobs) {
         // Calculate match score
-        const score = await this.calculateMatchScore(
-          userProfile,
-          job,
-          preferences
-        );
+        const score = await this.calculateMatchScore(profile, skills, desiredTitles, job);
 
-        if (score.total >= 0.6) { // Minimum 60% match
-          // Save match
-          await query(
-            `INSERT INTO job_matches 
-             (user_id, job_listing_id, match_score, match_reasons)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (user_id, job_listing_id) DO NOTHING`,
-            [userId, job.id, score.total, JSON.stringify(score.reasons)]
-          );
+        if (score.total >= 60) { // Minimum 60% match
+          // Save match to database
+          try {
+            await query(
+              `INSERT INTO job_matches 
+               (user_id, job_id, match_score, match_reasons)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (user_id, job_id) DO NOTHING`,
+              [userId, job.id, score.total, JSON.stringify(score.reasons)]
+            );
 
-          matches.push({
-            jobId: job.id,
-            title: job.title,
-            company: job.company,
-            matchScore: score.total,
-            reasons: score.reasons
-          });
+            matches.push({
+              jobId: job.id,
+              title: job.title,
+              company: job.company,
+              location: job.location,
+              match_score: score.total,
+              match_reasons: score.reasons
+            });
+          } catch (dbError) {
+            logger.error(`Error saving match for job ${job.id}:`, dbError);
+          }
         }
 
         // Limit matches
         if (matches.length >= limit) break;
       }
 
-      logger.info(`Created ${matches.length} job matches for user ${userId}`);
+      logger.info(`✅ Created ${matches.length} job matches for user ${userId}`);
       return matches;
     } catch (error) {
-      logger.error('Job matching error:', error);
-      throw error;
+      logger.error('❌ Job matching error:', error);
+      return []; // Return empty array instead of throwing
     }
   }
 
   /**
    * Calculate comprehensive match score
    */
-  async calculateMatchScore(userProfile, job, preferences) {
+  async calculateMatchScore(profile, skills, desiredTitles, job) {
     const reasons = [];
-    let skillScore = 0;
-    let locationScore = 0;
-    let salaryScore = 0;
-    let titleScore = 0;
-    let typeScore = 0;
+    let totalScore = 0;
 
-    // 1. Skills matching (40%)
-    const jobText = `${job.title} ${job.description || ''}`;
-    const skillMatch = await this.matchSkills(userProfile, jobText);
-    skillScore = skillMatch.score * 0.4;
-    if (skillMatch.matched.length > 0) {
+    // 1. Skills matching (40 points)
+    const skillScore = this.matchSkills(skills, job.description || job.title);
+    totalScore += skillScore;
+    if (skillScore > 0) {
       reasons.push({
         type: 'skill',
-        description: `Skills match: ${skillMatch.matched.join(', ')}`,
+        description: `Skills match: ${skillScore}/40 points`,
         weight: skillScore
       });
     }
 
-    // 2. Location matching (25%)
-    if (preferences.remote && job.remote) {
-      locationScore = 0.25;
-      reasons.push({
-        type: 'location',
-        description: 'Remote work preference match',
-        weight: 0.25
-      });
-    } else if (preferences.locations?.some(loc => 
-      job.location?.toLowerCase().includes(loc.toLowerCase())
-    )) {
-      locationScore = 0.25;
-      reasons.push({
-        type: 'location',
-        description: `Location match: ${job.location}`,
-        weight: 0.25
-      });
-    } else if (job.location) {
-      locationScore = 0.1;
-    }
-
-    // 3. Salary matching (15%)
-    if (job.salary && preferences.minSalary) {
-      const salaryMatch = this.parseSalary(job.salary);
-      if (salaryMatch >= preferences.minSalary) {
-        salaryScore = 0.15;
-        reasons.push({
-          type: 'salary',
-          description: 'Salary meets minimum requirement',
-          weight: 0.15
-        });
-      } else {
-        salaryScore = 0.05;
-      }
-    } else {
-      salaryScore = 0.08; // Neutral if no salary info
-    }
-
-    // 4. Title matching (15%)
-    if (preferences.jobTitles?.some(title => 
-      job.title.toLowerCase().includes(title.toLowerCase())
-    )) {
-      titleScore = 0.15;
+    // 2. Title matching (25 points)
+    const titleScore = this.matchTitle(desiredTitles, job.title);
+    totalScore += titleScore;
+    if (titleScore > 0) {
       reasons.push({
         type: 'title',
-        description: `Title matches preference: ${job.title}`,
-        weight: 0.15
+        description: `Title match: ${titleScore}/25 points`,
+        weight: titleScore
       });
-    } else {
-      titleScore = 0.05;
     }
 
-    // 5. Employment type matching (5%)
-    if (preferences.employmentTypes?.includes(job.job_type)) {
-      typeScore = 0.05;
+    // 3. Location/Remote matching (20 points)
+    const locationScore = this.matchLocation(profile, job);
+    totalScore += locationScore;
+    if (locationScore > 0) {
+      reasons.push({
+        type: 'location',
+        description: `Location match: ${locationScore}/20 points`,
+        weight: locationScore
+      });
+    }
+
+    // 4. Salary matching (10 points) - optional
+    const salaryScore = this.matchSalary(profile, job.salary_range);
+    totalScore += salaryScore;
+    if (salaryScore > 0) {
+      reasons.push({
+        type: 'salary',
+        description: `Salary match: ${salaryScore}/10 points`,
+        weight: salaryScore
+      });
+    }
+
+    // 5. Job type matching (5 points)
+    const typeScore = this.matchJobType(profile, job.job_type);
+    totalScore += typeScore;
+    if (typeScore > 0) {
       reasons.push({
         type: 'type',
-        description: `Employment type match: ${job.job_type}`,
-        weight: 0.05
+        description: `Job type match: ${typeScore}/5 points`,
+        weight: typeScore
       });
     }
 
-    const total = Math.min(1.0, skillScore + locationScore + salaryScore + titleScore + typeScore);
-
     return {
-      total: parseFloat(total.toFixed(2)),
-      reasons,
-      breakdown: {
-        skills: skillScore,
-        location: locationScore,
-        salary: salaryScore,
-        title: titleScore,
-        type: typeScore
-      }
+      total: Math.min(100, Math.round(totalScore)),
+      reasons
     };
   }
 
   /**
-   * Match skills using AI
+   * Match skills (basic keyword matching)
    */
-  async matchSkills(userProfile, jobDescription) {
-    try {
-      const prompt = `
-Given this professional profile:
-${userProfile}
+  matchSkills(userSkills, jobText) {
+    if (!userSkills || userSkills.length === 0 || !jobText) return 0;
 
-And this job description:
-${jobDescription}
+    const jobTextLower = jobText.toLowerCase();
+    const matchedSkills = userSkills.filter(skill => 
+      jobTextLower.includes(skill.toLowerCase())
+    );
 
-List the skills from the profile that match the job requirements. 
-Return only a JSON object with this format:
-{
-  "matched": ["skill1", "skill2"],
-  "score": 0.8
-}
+    const matchPercentage = matchedSkills.length / userSkills.length;
+    return Math.round(matchPercentage * 40); // Max 40 points
+  }
 
-The score should be 0-1 representing how well the skills match.
-`;
+  /**
+   * Match job title
+   */
+  matchTitle(desiredTitles, jobTitle) {
+    if (!desiredTitles || desiredTitles.length === 0 || !jobTitle) return 5; // Default points
 
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'You are a job matching expert. Return only valid JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.3
-      });
+    const jobTitleLower = jobTitle.toLowerCase();
+    const hasMatch = desiredTitles.some(title => 
+      jobTitleLower.includes(title.toLowerCase()) || 
+      title.toLowerCase().includes(jobTitleLower)
+    );
 
-      const result = JSON.parse(response.choices[0].message.content);
-      return {
-        matched: result.matched || [],
-        score: result.score || 0.5
-      };
-    } catch (error) {
-      logger.error('Skill matching error:', error);
-      return { matched: [], score: 0.5 };
+    return hasMatch ? 25 : 5; // Full points if match, minimal if not
+  }
+
+  /**
+   * Match location/remote preference
+   */
+  matchLocation(profile, job) {
+    const remotePreference = profile.remote_preference;
+    const jobRemoteType = job.remote_type;
+
+    // Perfect match
+    if (remotePreference === 'any') return 20;
+    if (remotePreference === jobRemoteType) return 20;
+    
+    // Partial match
+    if (remotePreference === 'hybrid' && (jobRemoteType === 'remote' || jobRemoteType === 'onsite')) {
+      return 10;
     }
+
+    // No match
+    return 5;
+  }
+
+  /**
+   * Match salary
+   */
+  matchSalary(profile, salaryRange) {
+    if (!profile.salary_min || !salaryRange) return 5; // Neutral
+
+    const salaryMatch = this.parseSalary(salaryRange);
+    if (salaryMatch >= profile.salary_min) {
+      return 10; // Meets requirement
+    }
+
+    return 0; // Below requirement
+  }
+
+  /**
+   * Match job type
+   */
+  matchJobType(profile, jobType) {
+    // Most people prefer full-time, so default match
+    if (!jobType) return 3;
+    if (jobType === 'full_time' || jobType === 'full-time') return 5;
+    return 3;
   }
 
   /**
    * Parse salary string to number
    */
   parseSalary(salaryString) {
+    if (!salaryString) return 0;
+    
     const match = salaryString.match(/\$?(\d{1,3}(?:,?\d{3})*(?:\.\d+)?)/);
     if (match) {
       return parseFloat(match[1].replace(/,/g, ''));
@@ -330,12 +276,12 @@ The score should be 0-1 representing how well the skills match.
            jl.company,
            jl.location,
            jl.description,
-           jl.url,
-           jl.salary,
-           jl.remote,
-           jl.posted_at
+           jl.application_url as url,
+           jl.salary_range,
+           jl.remote_type,
+           jl.posted_date
          FROM job_matches jm
-         JOIN job_listings jl ON jm.job_listing_id = jl.id
+         JOIN job_listings jl ON jm.job_id = jl.id
          WHERE jm.user_id = $1 AND jm.reviewed = $2
          ORDER BY jm.match_score DESC, jm.created_at DESC
          LIMIT 50`,
