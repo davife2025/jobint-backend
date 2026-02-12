@@ -420,4 +420,4 @@ async function processCVAsync(userId, cvFilePath, cvUrl, jobTitles, remotePrefer
   }
 }
 
-module.exports = router;
+module.exports = { router };
