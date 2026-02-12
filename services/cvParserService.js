@@ -1,15 +1,24 @@
-const OpenAI = require('openai/index.mjs');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
 
-const { OpenAI } = require("openai");
+// ✅ FIX: Only declare OpenAI once
+let openai = null;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// Only initialize OpenAI if API key is available
+if (process.env.OPENAI_API_KEY) {
+  try {
+    const { OpenAI } = require('openai');
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+    logger.info('✅ OpenAI initialized for CV parsing');
+  } catch (error) {
+    logger.warn('⚠️  OpenAI not available:', error.message);
+  }
+}
 
 class CVParserService {
   /**
@@ -61,12 +70,25 @@ class CVParserService {
    * Parse CV text using OpenAI to extract structured data
    */
   async parseCV(cvText) {
+    // ✅ Check if OpenAI is available
+    if (!openai) {
+      logger.warn('⚠️  OpenAI not configured - using basic parsing');
+      return {
+        skills: this.extractBasicSkills(cvText),
+        experience: [],
+        education: [],
+        certifications: [],
+        summary: null,
+        parseError: false
+      };
+    }
+
     try {
       const prompt = `
 You are a professional resume parser. Extract the following information from this resume and return it as a valid JSON object.
 
 Resume text:
-${cvText}
+${cvText.substring(0, 3000)}
 
 Extract and return a JSON object with this exact structure (use null for missing fields):
 {
@@ -126,9 +148,9 @@ Important: Return ONLY valid JSON, no explanations or markdown formatting.
     } catch (error) {
       logger.error('CV parsing error:', error);
       
-      // Return default structure if parsing fails
+      // Fallback to basic parsing
       return {
-        skills: [],
+        skills: this.extractBasicSkills(cvText),
         experience: [],
         education: [],
         certifications: [],
@@ -139,11 +161,35 @@ Important: Return ONLY valid JSON, no explanations or markdown formatting.
   }
 
   /**
+   * Extract basic skills without AI (fallback)
+   */
+  extractBasicSkills(text) {
+    const commonSkills = [
+      'JavaScript', 'Python', 'Java', 'React', 'Node.js', 'SQL',
+      'AWS', 'Docker', 'Kubernetes', 'TypeScript', 'Git', 'HTML',
+      'CSS', 'MongoDB', 'PostgreSQL', 'Express', 'Angular', 'Vue',
+      'C++', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Go', 'Rust',
+      'Linux', 'Azure', 'GCP', 'Jenkins', 'CI/CD', 'Agile', 'Scrum'
+    ];
+
+    const foundSkills = [];
+    const lowerText = text.toLowerCase();
+
+    commonSkills.forEach(skill => {
+      if (lowerText.includes(skill.toLowerCase())) {
+        foundSkills.push(skill);
+      }
+    });
+
+    return foundSkills.length > 0 ? foundSkills : ['General'];
+  }
+
+  /**
    * Complete CV processing pipeline
    */
   async processCV(filePath) {
     try {
-      logger.info(`Processing CV: ${filePath}`);
+      logger.info(`📄 Processing CV: ${filePath}`);
 
       // Extract text from file
       const cvText = await this.extractTextFromCV(filePath);
@@ -152,10 +198,10 @@ Important: Return ONLY valid JSON, no explanations or markdown formatting.
         throw new Error('CV appears to be empty or too short');
       }
 
-      // Parse CV using AI
+      // Parse CV using AI (or basic if OpenAI not available)
       const parsedData = await this.parseCV(cvText);
 
-      logger.info('CV processed successfully');
+      logger.info('✅ CV processed successfully');
 
       return {
         cvText,
@@ -163,7 +209,7 @@ Important: Return ONLY valid JSON, no explanations or markdown formatting.
         success: true
       };
     } catch (error) {
-      logger.error('CV processing error:', error);
+      logger.error('❌ CV processing error:', error);
       return {
         cvText: null,
         parsedData: null,
@@ -187,7 +233,7 @@ Important: Return ONLY valid JSON, no explanations or markdown formatting.
     };
 
     // Infer job titles from experience if not provided
-    if (preferences.desiredJobTitles.length === 0 && parsedCV.experience?.length > 0) {
+    if (preferences.desiredJobTitles.length === 0 && parsedCV?.experience?.length > 0) {
       // Use most recent job title
       preferences.desiredJobTitles.push(parsedCV.experience[0].role);
     }
