@@ -1,326 +1,303 @@
+// services/emailServices.js - FIXED WITH BETTER DEV MODE
+
 const nodemailer = require('nodemailer');
-const { query } = require('../config/database');
 const logger = require('../utils/logger');
 
 class EmailService {
   constructor() {
-    // Create transporter based on environment
-    if (process.env.NODE_ENV === 'production') {
-      // Production: Use real SMTP service (e.g., SendGrid, AWS SES, etc.)
-      this.transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT || 587,
-        secure: false,
+    this.enabled = false;
+    
+    if (process.env.NODE_ENV === 'production' && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+      // Production mode with real SMTP
+      this.transporter = nodemailer.createTransporter({
+        service: process.env.EMAIL_SERVICE || 'gmail',
         auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASSWORD
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASSWORD
         }
       });
+      this.enabled = true;
+      logger.info('✅ Email service enabled (Production mode)');
     } else {
-      // Development: Log emails to console instead of sending
+      // Development mode - log emails instead of sending
       this.transporter = {
         sendMail: async (mailOptions) => {
-          console.log('\n📧 EMAIL WOULD BE SENT:');
-          console.log('─────────────────────────────');
-          console.log('To:', mailOptions.to);
-          console.log('Subject:', mailOptions.subject);
-          console.log('Body:', mailOptions.text || mailOptions.html);
-          console.log('─────────────────────────────\n');
-          return { messageId: 'dev-' + Date.now() };
+          logger.info('📧 ========== EMAIL (DEV MODE) ==========');
+          logger.info(`To: ${mailOptions.to}`);
+          logger.info(`Subject: ${mailOptions.subject}`);
+          logger.info(`---`);
+          logger.info(mailOptions.text || 'No text content');
+          logger.info('=========================================');
+          
+          // Also log HTML version for debugging
+          if (mailOptions.html) {
+            logger.debug('HTML version:', mailOptions.html.substring(0, 200) + '...');
+          }
+          
+          return { 
+            messageId: 'dev-' + Date.now(),
+            accepted: [mailOptions.to]
+          };
         }
       };
+      this.enabled = true; // Still "enabled" but just logs
+      logger.info('⚠️  Email service in DEV mode (will log instead of send)');
     }
-
-    this.fromEmail = process.env.FROM_EMAIL || 'noreply@jobint.com';
-    this.fromName = process.env.FROM_NAME || 'JobInt';
-    this.baseUrl = process.env.CLIENT_URL || 'http://localhost:3000';
   }
 
   /**
    * Send welcome email with tracking link
    */
   async sendWelcomeEmail(user) {
-    const trackingUrl = `${this.baseUrl}/track/${user.tracking_token}`;
+    if (!this.enabled) {
+      logger.warn('Email service not enabled');
+      return { success: false };
+    }
 
-    const subject = 'Welcome to JobInt - Your Job Search is Starting! 🚀';
+    const trackingUrl = `${process.env.CLIENT_URL}/dashboard`;
     
-    const html = `
+    const mailOptions = {
+      from: process.env.EMAIL_FROM || process.env.EMAIL_USER || 'noreply@jobint.com',
+      to: user.email,
+      subject: '🎉 Welcome to JobClaw - Your Job Search Starts Now!',
+      text: `
+Hi ${user.first_name || 'there'}!
+
+Welcome to JobClaw! We're excited to help you land your dream job.
+
+Your application has been submitted successfully, and our AI is already analyzing your CV to find the best job matches.
+
+Access your dashboard:
+${trackingUrl}
+
+What happens next:
+1. ✅ CV Analysis (30-60 seconds)
+2. 🎯 Job Matching (we'll find 5-20 jobs that match your profile)
+3. 📧 You'll receive match notifications via email
+4. ✓ Review and approve jobs you want to apply to
+5. 🚀 We'll handle the applications automatically
+
+Your tracking link:
+${trackingUrl}
+
+Bookmark this link to check your application status anytime!
+
+Questions? Just reply to this email.
+
+Best regards,
+The JobClaw Team
+
+---
+JobClaw - AI-Powered Job Applications
+      `.trim(),
+      html: `
 <!DOCTYPE html>
 <html>
 <head>
   <style>
     body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
     .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #4F46E5; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
-    .button { display: inline-block; padding: 14px 28px; background: #4F46E5; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: bold; }
-    .tracking-token { background: #e5e7eb; padding: 15px; border-radius: 6px; font-family: monospace; margin: 15px 0; }
-    .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 14px; }
+    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+    .content { background: white; padding: 30px; border: 1px solid #e0e0e0; }
+    .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+    .steps { background: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0; }
+    .step { margin: 10px 0; padding-left: 25px; position: relative; }
+    .step:before { content: "✓"; position: absolute; left: 0; color: #667eea; font-weight: bold; }
+    .footer { text-align: center; color: #888; padding: 20px; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>Welcome to JobInt! 🎉</h1>
+      <h1 style="margin: 0;">🎉 Welcome to JobClaw!</h1>
+      <p style="margin: 10px 0 0 0; opacity: 0.9;">Your AI-Powered Job Search Assistant</p>
     </div>
+    
     <div class="content">
-      <p>Hi ${user.first_name || 'there'},</p>
+      <p>Hi <strong>${user.first_name || 'there'}</strong>!</p>
       
-      <p>Thank you for submitting your profile! We're excited to help you find your dream job.</p>
+      <p>Welcome to JobClaw! We're excited to help you land your dream job.</p>
       
-      <h3>What's happening now:</h3>
-      <ul>
-        <li>🤖 Our AI is analyzing your CV and extracting your skills</li>
-        <li>🔍 We're searching thousands of jobs to find the best matches</li>
-        <li>📊 We'll calculate match scores based on your preferences</li>
-      </ul>
+      <p>Your application has been submitted successfully, and our AI is already analyzing your CV to find the best job matches.</p>
       
-      <p><strong>This process typically takes 5-10 minutes.</strong></p>
-      
-      <p>We'll send you another email when we've found job matches for you!</p>
-      
-      <h3>Track Your Applications:</h3>
-      <p>Use this link anytime to check your application status:</p>
-      
-      <a href="${trackingUrl}" class="button">View My Dashboard</a>
-      
-      <div class="tracking-token">
-        <strong>Your Tracking Link:</strong><br>
-        <a href="${trackingUrl}">${trackingUrl}</a>
+      <div style="text-align: center;">
+        <a href="${trackingUrl}" class="button">Access Your Dashboard</a>
       </div>
       
-      <p><small>💡 <strong>Pro Tip:</strong> Bookmark this link! You can access your dashboard anytime without a password.</small></p>
+      <div class="steps">
+        <h3 style="margin-top: 0;">What happens next:</h3>
+        <div class="step">CV Analysis (30-60 seconds)</div>
+        <div class="step">Job Matching (we'll find 5-20 jobs that match your profile)</div>
+        <div class="step">You'll receive match notifications via email</div>
+        <div class="step">Review and approve jobs you want to apply to</div>
+        <div class="step">We'll handle the applications automatically</div>
+      </div>
+      
+      <p><strong>Your tracking link:</strong><br>
+      <a href="${trackingUrl}">${trackingUrl}</a></p>
+      
+      <p style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin: 20px 0;">
+        💡 <strong>Tip:</strong> Bookmark this link to check your application status anytime!
+      </p>
+      
+      <p>Questions? Just reply to this email.</p>
+      
+      <p>Best regards,<br>
+      <strong>The JobClaw Team</strong></p>
     </div>
     
     <div class="footer">
-      <p>JobInt - Automated Job Applications Powered by AI</p>
-      <p>Questions? Reply to this email or visit our help center.</p>
+      <p>JobClaw - AI-Powered Job Applications</p>
+      <p>You're receiving this because you submitted a job application through JobClaw.</p>
     </div>
   </div>
 </body>
 </html>
-    `;
+      `.trim()
+    };
 
-    const text = `
-Welcome to JobInt!
-
-Hi ${user.first_name || 'there'},
-
-Thank you for submitting your profile! We're excited to help you find your dream job.
-
-What's happening now:
-- Our AI is analyzing your CV and extracting your skills
-- We're searching thousands of jobs to find the best matches
-- We'll calculate match scores based on your preferences
-
-This process typically takes 5-10 minutes.
-
-We'll send you another email when we've found job matches for you!
-
-Track Your Applications:
-${trackingUrl}
-
-Pro Tip: Bookmark this link! You can access your dashboard anytime without a password.
-
----
-JobInt - Automated Job Applications Powered by AI
-    `;
-
-    return await this.sendEmail(user.email, subject, text, html, user.id, 'welcome');
+    try {
+      const info = await this.transporter.sendMail(mailOptions);
+      logger.info(`✅ Welcome email sent to ${user.email}${process.env.NODE_ENV !== 'production' ? ' (dev mode)' : ''}`);
+      return { success: true, messageId: info.messageId };
+    } catch (error) {
+      logger.error('❌ Failed to send welcome email:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   /**
-   * Send matches found email
+   * Send matches found notification
    */
-  async sendMatchesFoundEmail(user, matchCount, topMatches) {
-    const trackingUrl = `${this.baseUrl}/track/${user.tracking_token}`;
+  async sendMatchesFoundEmail(user, matchCount, matches = []) {
+    if (!this.enabled) {
+      logger.warn('Email service not enabled');
+      return { success: false };
+    }
 
-    const subject = `We Found ${matchCount} Jobs for You! 🎯`;
+    const trackingUrl = `${process.env.CLIENT_URL}/dashboard`;
     
-    const matchesHtml = topMatches.slice(0, 3).map(match => `
-      <div style="border: 1px solid #e5e7eb; padding: 15px; margin: 10px 0; border-radius: 6px; background: white;">
-        <h4 style="margin: 0 0 10px 0; color: #1f2937;">${match.title}</h4>
-        <p style="margin: 5px 0; color: #6b7280;"><strong>${match.company}</strong> • ${match.location}</p>
-        <p style="margin: 5px 0; color: #10b981; font-weight: bold;">Match Score: ${match.match_score}%</p>
-      </div>
-    `).join('');
+    // Prepare top matches for email
+    const topMatches = matches.slice(0, 5).map(m => 
+      `- ${m.title} at ${m.company} (${m.match_score || m.matchScore}% match)`
+    ).join('\n');
 
-    const html = `
+    const mailOptions = {
+      from: process.env.EMAIL_FROM || process.env.EMAIL_USER || 'noreply@jobint.com',
+      to: user.email,
+      subject: `🎯 Found ${matchCount} Job Matches for You!`,
+      text: `
+Hi ${user.first_name || 'there'}!
+
+Great news! We've found ${matchCount} jobs that match your profile.
+
+Top matches:
+${topMatches}
+
+View all matches and start applying:
+${trackingUrl}
+
+These jobs match your skills, experience, and preferences. Review them and let us know which ones to apply to!
+
+Best regards,
+The JobClaw Team
+      `.trim(),
+      html: `
 <!DOCTYPE html>
 <html>
 <head>
   <style>
     body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
     .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #10b981; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
-    .button { display: inline-block; padding: 14px 28px; background: #4F46E5; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: bold; }
-    .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 14px; }
+    .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+    .content { background: white; padding: 30px; border: 1px solid #e0e0e0; }
+    .button { display: inline-block; padding: 12px 30px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+    .match { background: #f0fdf4; padding: 15px; margin: 10px 0; border-left: 4px solid #10b981; border-radius: 5px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>Great News! 🎉</h1>
-      <h2>We Found ${matchCount} Jobs for You</h2>
-    </div>
-    <div class="content">
-      <p>Hi ${user.first_name || 'there'},</p>
-      
-      <p>Our AI has finished analyzing your profile and we've found <strong>${matchCount} job opportunities</strong> that match your skills and preferences!</p>
-      
-      <h3>Your Top Matches:</h3>
-      ${matchesHtml}
-      
-      ${matchCount > 3 ? `<p><em>...and ${matchCount - 3} more opportunities waiting for you!</em></p>` : ''}
-      
-      <h3>What's Next?</h3>
-      <p>Click the button below to review your matches and approve the jobs you want to apply to:</p>
-      
-      <a href="${trackingUrl}" class="button">Review My Matches</a>
-      
-      <p><strong>How it works:</strong></p>
-      <ol>
-        <li>Review each job match and see why it's a good fit</li>
-        <li>Approve the jobs you want to apply to</li>
-        <li>We'll automatically submit your applications</li>
-        <li>Track everything from your dashboard</li>
-      </ol>
+      <h1 style="margin: 0;">🎯 Jobs Found!</h1>
+      <p style="margin: 10px 0 0 0; opacity: 0.9;">We found ${matchCount} matches for you</p>
     </div>
     
-    <div class="footer">
-      <p>JobInt - Automated Job Applications Powered by AI</p>
+    <div class="content">
+      <p>Hi <strong>${user.first_name || 'there'}</strong>!</p>
+      
+      <p>Great news! We've found <strong>${matchCount} jobs</strong> that match your profile.</p>
+      
+      <h3>Top Matches:</h3>
+      ${matches.slice(0, 5).map(m => `
+        <div class="match">
+          <strong>${m.title}</strong> at ${m.company}<br>
+          <span style="color: #10b981;">✓ ${m.match_score || m.matchScore}% match</span>
+        </div>
+      `).join('')}
+      
+      <div style="text-align: center;">
+        <a href="${trackingUrl}" class="button">View All Matches</a>
+      </div>
+      
+      <p>These jobs match your skills, experience, and preferences. Review them and let us know which ones to apply to!</p>
+      
+      <p>Best regards,<br>
+      <strong>The JobClaw Team</strong></p>
     </div>
   </div>
 </body>
 </html>
-    `;
+      `.trim()
+    };
 
-    const text = `
-Great News! We Found ${matchCount} Jobs for You
-
-Hi ${user.first_name || 'there'},
-
-Our AI has finished analyzing your profile and we've found ${matchCount} job opportunities that match your skills and preferences!
-
-Your Top Matches:
-${topMatches.slice(0, 3).map((m, i) => `
-${i + 1}. ${m.title} at ${m.company}
-   Location: ${m.location}
-   Match Score: ${m.match_score}%
-`).join('\n')}
-
-What's Next?
-Review your matches and approve the jobs you want to apply to:
-${trackingUrl}
-
-How it works:
-1. Review each job match and see why it's a good fit
-2. Approve the jobs you want to apply to
-3. We'll automatically submit your applications
-4. Track everything from your dashboard
-
----
-JobInt - Automated Job Applications Powered by AI
-    `;
-
-    return await this.sendEmail(user.email, subject, text, html, user.id, 'matches_found');
+    try {
+      const info = await this.transporter.sendMail(mailOptions);
+      logger.info(`✅ Matches email sent to ${user.email}${process.env.NODE_ENV !== 'production' ? ' (dev mode)' : ''}`);
+      return { success: true, messageId: info.messageId };
+    } catch (error) {
+      logger.error('❌ Failed to send matches email:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   /**
    * Send application status update
    */
-  async sendApplicationStatusEmail(user, application, job) {
-    const trackingUrl = `${this.baseUrl}/track/${user.tracking_token}`;
-    const statusMessages = {
-      submitted: { emoji: '✅', title: 'Application Submitted', color: '#10b981' },
-      reviewing: { emoji: '👀', title: 'Application Under Review', color: '#3b82f6' },
-      interview_scheduled: { emoji: '🎤', title: 'Interview Scheduled!', color: '#8b5cf6' },
-      rejected: { emoji: '❌', title: 'Application Update', color: '#ef4444' },
-      offered: { emoji: '🎉', title: 'Job Offer Received!', color: '#f59e0b' }
+  async sendApplicationStatusEmail(user, application) {
+    if (!this.enabled) {
+      logger.warn('Email service not enabled');
+      return { success: false };
+    }
+
+    const trackingUrl = `${process.env.CLIENT_URL}/dashboard`;
+
+    const mailOptions = {
+      from: process.env.EMAIL_FROM || process.env.EMAIL_USER || 'noreply@jobint.com',
+      to: user.email,
+      subject: `📬 Application Status Update: ${application.job_title}`,
+      text: `
+Hi ${user.first_name || 'there'}!
+
+Your application status has been updated:
+
+Job: ${application.job_title}
+Company: ${application.company}
+Status: ${application.status}
+
+View details:
+${trackingUrl}
+
+Best regards,
+The JobClaw Team
+      `.trim()
     };
 
-    const status = statusMessages[application.status] || statusMessages.submitted;
-
-    const subject = `${status.emoji} ${status.title} - ${job.title}`;
-    
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: ${status.color}; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px; }
-    .button { display: inline-block; padding: 14px 28px; background: #4F46E5; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: bold; }
-    .job-details { background: white; padding: 20px; border-radius: 6px; margin: 15px 0; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>${status.emoji} ${status.title}</h1>
-    </div>
-    <div class="content">
-      <p>Hi ${user.first_name || 'there'},</p>
-      
-      <div class="job-details">
-        <h3 style="margin: 0 0 10px 0;">${job.title}</h3>
-        <p style="margin: 5px 0;"><strong>Company:</strong> ${job.company}</p>
-        <p style="margin: 5px 0;"><strong>Location:</strong> ${job.location}</p>
-        <p style="margin: 5px 0;"><strong>Status:</strong> ${application.status.replace('_', ' ').toUpperCase()}</p>
-      </div>
-      
-      <p>View all your applications and track their progress:</p>
-      <a href="${trackingUrl}" class="button">View Dashboard</a>
-    </div>
-  </div>
-</body>
-</html>
-    `;
-
-    const text = `${status.title} - ${job.title}\n\nHi ${user.first_name},\n\nYour application for ${job.title} at ${job.company} is now: ${application.status}\n\nView dashboard: ${trackingUrl}`;
-
-    return await this.sendEmail(user.email, subject, text, html, user.id, 'application_status');
-  }
-
-  /**
-   * Core email sending function
-   */
-  async sendEmail(to, subject, text, html, userId = null, emailType = 'generic') {
     try {
-      const mailOptions = {
-        from: `${this.fromName} <${this.fromEmail}>`,
-        to,
-        subject,
-        text,
-        html
-      };
-
       const info = await this.transporter.sendMail(mailOptions);
-
-      // Log email in database
-      await query(
-        `INSERT INTO email_log (user_id, email_to, email_type, subject, sent, sent_at)
-         VALUES ($1, $2, $3, $4, TRUE, CURRENT_TIMESTAMP)`,
-        [userId, to, emailType, subject]
-      );
-
-      logger.info(`Email sent: ${emailType} to ${to}`);
+      logger.info(`✅ Status email sent to ${user.email}${process.env.NODE_ENV !== 'production' ? ' (dev mode)' : ''}`);
       return { success: true, messageId: info.messageId };
     } catch (error) {
-      logger.error('Email sending error:', error);
-
-      // Log failed email
-      if (userId) {
-        await query(
-          `INSERT INTO email_log (user_id, email_to, email_type, subject, sent, error_message)
-           VALUES ($1, $2, $3, $4, FALSE, $5)`,
-          [userId, to, emailType, subject, error.message]
-        );
-      }
-
+      logger.error('❌ Failed to send status email:', error);
       return { success: false, error: error.message };
     }
   }
